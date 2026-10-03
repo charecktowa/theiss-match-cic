@@ -27,5 +27,8 @@ picks up the matching `DATABASE_URL` automatically.
 To load the `saber_sip` dataset (excluded from git — see `data/`):
 
 ```bash
-docker compose exec -T db psql -U theiss -d theiss -v ON_ERROR_STOP=1 -f - < data/saber_sip.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -f -' < data/saber_sip.sql
 ```
+
+The single quotes are required: they keep the host shell from expanding the
+variables, so the ones configured inside the `db` container are used instead.
