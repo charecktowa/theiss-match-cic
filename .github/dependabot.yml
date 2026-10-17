@@ -1,10 +1,14 @@
 version: 2
 updates:
+  # Wait a week before adopting a new release, so a compromised version has time
+  # to surface before it reaches this repository.
   - package-ecosystem: "uv"
     # The uv project lives in backend/, so this must not be "/".
     directory: "/backend"
     schedule:
       interval: "monthly"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     groups:
       python-deps:
@@ -14,6 +18,20 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:
+      default-days: 7
     groups:
       actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "pre-commit"
+    # Keeps the hook revisions current. They must stay equal to the versions
+    # resolved in backend/uv.lock, so these two updates belong together.
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    groups:
+      pre-commit:
         patterns: ["*"]
