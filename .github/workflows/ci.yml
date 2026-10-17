@@ -73,3 +73,33 @@ jobs:
 
       - name: Tests inside the image
         run: docker run --rm theiss-match-cic-api:test pytest
+
+  # Notebooks have nothing to import or test in isolation, so this job only
+  # guards the project's own consistency.
+  experiments:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: experiments
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Check the lockfile is current
+        run: uv lock --check
+
+      # Installs the dev group only, on purpose: the project's dependencies
+      # include torch, and pulling it down on every run just to lint is not
+      # worth the minutes. The check above still resolves the full set.
+      - name: Install tooling only
+        run: uv sync --frozen --only-dev
+
+      - name: Ruff lint
+        run: uv run --no-sync ruff check .
