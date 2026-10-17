@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: these jobs only read the repository, so do not let them
+# inherit a token with write access.
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -20,12 +25,16 @@ jobs:
         working-directory: backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        # Pinned to a commit rather than a tag: a tag is mutable, and pinning
+        # is what forces the ref to be resolved and verified.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        # Exact version, not @v10: astral-sh/setup-uv stopped publishing moving
-        # major tags after v7, so @v10 does not resolve.
-        uses: astral-sh/setup-uv@v10.3.0
+        # astral-sh/setup-uv stopped publishing moving major tags after v7, so
+        # @v10 does not resolve at all.
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.13"
 
@@ -52,7 +61,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Build production image
         run: docker compose build
