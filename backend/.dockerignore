@@ -1,10 +1,17 @@
-.venv
-__pycache__
-*.pyc
-.mypy_cache
-.pytest_cache
-.ruff_cache
-.git
-.gitignore
-Dockerfile
-.dockerignore
+# Allowlist: only what the image needs is sent as build context, so local files
+# such as .env can never end up inside it. The build context is independent of
+# git, so .gitignore does not protect the image.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!app/
+!tests/
+
+# Constraints inside the allowed directories. These must come AFTER the
+# exceptions above, because `!app/` and `!tests/` re-include their whole
+# subtree, so a nested .env would otherwise reach the image.
+**/.env
+**/.env.*
+**/__pycache__
+**/*.py[cod]
