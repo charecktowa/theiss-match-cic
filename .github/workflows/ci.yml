@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  # Branches are checked through their pull request; main again after each merge.
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref cancels the run still in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The uv project lives in backend/, not at the repository root.
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        # Exact version, not @v10: astral-sh/setup-uv stopped publishing moving
+        # major tags after v7, so @v10 does not resolve.
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy .
+
+      - name: Bandit
+        run: uv run bandit -r . -x .venv -c pyproject.toml
+
+      - name: Tests
+        run: uv run pytest
+
+  # The image must build and pass the tests on its own, without the host's packages.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build production image
+        run: docker compose build
+
+      - name: Build test image with dev dependencies
+        run: docker build --build-arg UV_SYNC_ARGS="--group dev" -t theiss-match-cic-api:test ./backend
+
+      - name: Tests inside the image
+        run: docker run --rm theiss-match-cic-api:test pytest
