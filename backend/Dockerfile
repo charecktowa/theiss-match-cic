@@ -8,11 +8,15 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# Dev dependencies stay out of the production image. CI overrides this with
+# --build-arg UV_SYNC_ARGS="--group dev" to run the test suite inside the image.
+ARG UV_SYNC_ARGS="--no-dev"
+
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev
+RUN uv sync --frozen --no-install-project $UV_SYNC_ARGS
 
 COPY . .
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen $UV_SYNC_ARGS
 
 ENV PATH="/app/.venv/bin:$PATH"
 
