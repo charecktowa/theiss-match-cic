@@ -6,10 +6,23 @@ readme = "README.md"
 authors = [
     { name = "A. Gutiérrez Alfaro", email = "charecktowa@pm.me" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "bandit[toml]",
+    "httpx",
+    "mypy",
+    "pre-commit",
+    # [tool.pytest] uses the native TOML mode, added in pytest 9.0. On pytest 8
+    # that table is ignored silently, so the floor is enforced here.
+    "pytest>=9",
+    "pytest-cov",
+    "ruff",
 ]
 
 [build-system]
@@ -19,3 +32,40 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-root = ""
 module-name = "app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "PD"]
+
+[tool.ruff.lint.isort]
+# Declared explicitly: first-party detection depends on the working directory,
+# which made `ruff check .` from backend/ and the pre-commit hook (run from the
+# repository root) disagree about import order.
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# First-party code must always resolve; never let it silently become `Any`.
+# `app.*` also matches `app` itself: mypy compiles `.*` to `(\..*)?`.
+module = ["app.*"]
+ignore_missing_imports = false
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+# The tests import the `app` package from the project root. pytest's console
+# script does not put the rootdir on sys.path (only `python -m pytest` does),
+# so the root is declared here rather than relying on the editable install.
+pythonpath = ["."]
+addopts = ["--import-mode=importlib", "-ra"]
+strict = true
