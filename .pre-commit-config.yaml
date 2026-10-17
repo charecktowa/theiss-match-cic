@@ -52,3 +52,11 @@ repos:
       # Validate the workflow and Dependabot config schemas.
       - id: check-github-workflows
       - id: check-dependabot
+
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      # Audits the workflows for security problems, including actions that are
+      # not pinned to a commit. The schema checks above validate the shape of a
+      # workflow, but never whether an action reference resolves.
+      - id: zizmor
