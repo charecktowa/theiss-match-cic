@@ -53,6 +53,23 @@ the audits that need the GitHub API. For the full audit, run it with a token:
 uvx zizmor@1.31.1 --gh-token "$(gh auth token)" .github/
 ```
 
+## Merging changes
+
+`main` is protected, so every change arrives through a pull request:
+
+- Both CI jobs (`quality` and `docker`) must pass, and the branch must be up to
+  date with `main`.
+- The only merge option is **Squash**, so `main` keeps a linear history and one
+  commit per pull request.
+- Every commit the pull request introduces must be signed and verified; GitHub
+  refuses the merge otherwise.
+
+Squash merging means the commit that lands on `main` is created and signed by
+GitHub, not by the key used on the branch, so the branch commits' own signatures
+do not survive the merge. Every commit on the branch must still be signed: an
+unsigned commit blocks the merge, even though the squash commit itself would be
+signed by GitHub.
+
 ## Running locally
 
 Requires Docker with the Compose v2 plugin.
