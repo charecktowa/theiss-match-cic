@@ -3,7 +3,9 @@ updates:
   # Wait a week before adopting a new release, so a compromised version has time
   # to surface before it reaches this repository.
   - package-ecosystem: "uv"
-    # The uv project lives in backend/, so this must not be "/".
+    # One entry per uv project: Dependabot looks for the lockfile relative to
+    # this path, so a single "/" entry would find neither of them.
+    # The uv projects live in backend/ and experiments/.
     directory: "/backend"
     schedule:
       interval: "monthly"
@@ -12,6 +14,17 @@ updates:
     open-pull-requests-limit: 5
     groups:
       python-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "uv"
+    directory: "/experiments"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      experiment-deps:
         patterns: ["*"]
 
   - package-ecosystem: "github-actions"

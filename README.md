@@ -10,7 +10,7 @@ backend/        FastAPI service. The only uv project in the repository.
 compose.yaml    local orchestration for every service
 db/init/        SQL that runs once, when the database volume is first created
 data/           datasets and dumps (git-ignored: inputs, not code)
-experiments/    marimo notebooks for model and embedding experiments (planned)
+experiments/    marimo notebooks; its own uv project, separate from the API
 frontend/       UI (planned; technology not chosen yet)
 ```
 
@@ -24,8 +24,9 @@ Three rules the layout follows, so new work knows where to go:
 - **`data/` holds inputs.** Dumps and datasets are read by both the backend and
   the notebooks, so neither owns them.
 
-Working on `experiments/` later will need its own uv project; its notebooks must
-not be added to the ruff hook scope until it is clear the linter handles them.
+Each Python project keeps its own `pyproject.toml`, `uv.lock` and environment, so
+their dependencies never have to agree; see `experiments/README.md` for how its
+notebooks are run and linted.
 
 ## Quality checks
 
