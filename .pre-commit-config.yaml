@@ -1,0 +1,54 @@
+# Hooks run from the repository root, so every backend hook is scoped with
+# `files:` and receives its config file explicitly.
+#
+# Keep each `rev` equal to the version resolved in backend/uv.lock: the hooks
+# run in their own isolated environments, so a drifting revision means the
+# versions you commit with are not the ones CI checks.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      # Check-only: no hook rewrites the code being committed.
+      - id: ruff-check
+        files: ^backend/
+        args: [--config=backend/pyproject.toml]
+      - id: ruff-format
+        files: ^backend/
+        args: [--config=backend/pyproject.toml, --check]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.4.0
+    hooks:
+      - id: mypy
+        files: ^backend/
+        args: [--config-file=backend/pyproject.toml]
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        files: ^backend/
+        args: [-r, backend, -x, backend/.venv, -c, backend/pyproject.toml]
+        pass_filenames: false
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.38.2
+    hooks:
+      # Validate the workflow and Dependabot config schemas.
+      - id: check-github-workflows
+      - id: check-dependabot
