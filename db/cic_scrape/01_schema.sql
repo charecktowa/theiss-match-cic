@@ -281,4 +281,10 @@ CREATE TABLE catalog.embedding (
     CHECK (public.vector_dims(embedding) = dimensions),
     UNIQUE (entity_type, entity_id, model_name, model_version, source_text_sha256)
 );
-CREATE INDEX embedding_vector_idx ON catalog.embedding USING hnsw (embedding vector_cosine_ops);
+-- No HNSW index yet. pgvector rejects an index on a `vector` column with no
+-- fixed dimension ("column does not have dimensions"), and this table keeps one
+-- row per model so the dimension varies by row. Once a model and its dimension
+-- are chosen, create one expression index per model:
+--   CREATE INDEX embedding_<model>_hnsw_idx ON catalog.embedding
+--       USING hnsw ((embedding::public.vector(1024)) public.vector_cosine_ops)
+--       WHERE model_name = '<model>' AND model_version = '<version>';
