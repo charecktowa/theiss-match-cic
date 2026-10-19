@@ -22,6 +22,15 @@ repos:
         alias: ruff-check-experiments
         files: ^experiments/
         args: [--config=experiments/pyproject.toml]
+      # scraper/ is plain Python, so it gets the formatter too.
+      - id: ruff-check
+        alias: ruff-check-scraper
+        files: ^scraper/
+        args: [--config=scraper/pyproject.toml]
+      - id: ruff-format
+        alias: ruff-format-scraper
+        files: ^scraper/
+        args: [--config=scraper/pyproject.toml, --check]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v2.4.0
