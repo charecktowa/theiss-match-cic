@@ -104,7 +104,7 @@ jobs:
       - name: Ruff lint
         run: uv run --no-sync ruff check .
 
-  # The scraper is stdlib-only, so this job is just the lockfile and lint checks.
+  # The scraper is stdlib-only: lockfile, lint, and tests on invented fixtures.
   scraper:
     runs-on: ubuntu-latest
     defaults:
@@ -132,3 +132,6 @@ jobs:
 
       - name: Ruff format check
         run: uv run --no-sync ruff format --check .
+
+      - name: Tests
+        run: uv run --no-sync pytest

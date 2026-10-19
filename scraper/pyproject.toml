@@ -8,6 +8,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+    "pytest>=9.1.1",
     "ruff",
 ]
 
@@ -17,3 +18,8 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "N", "PD"]
+
+[tool.pytest.ini_options]
+# The scripts are run as files, not installed, so tests import them from here.
+pythonpath = ["."]
+testpaths = ["tests"]
