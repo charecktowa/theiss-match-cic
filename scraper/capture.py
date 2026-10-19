@@ -14,14 +14,13 @@ import json
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from http.cookiejar import CookieJar
 from pathlib import Path
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import HTTPCookieProcessor, Request, build_opener
-
 
 BASE = "https://www.cic.ipn.mx"
 EXTRACTOR_VERSION = "0.1.0"
@@ -42,10 +41,7 @@ DETAIL_FIELDS = {
     "id_proy": "project",
     "id_tet": "thesis",
 }
-USER_AGENT = (
-    "ThesisMatchCICResearch/0.1 "
-    "(+https://github.com/charecktowa/theiss-match-cic)"
-)
+USER_AGENT = "ThesisMatchCICResearch/0.1 (+https://github.com/charecktowa/theiss-match-cic)"
 
 
 class PageParser(HTMLParser):
@@ -149,7 +145,8 @@ class Capture:
             content_type = exc.headers.get("Content-Type") if exc.headers else None
             self.failures += 1
             error = f"{type(exc).__name__}: {exc}"
-        except (URLError, TimeoutError, OSError, UnicodeError) as exc:
+        # URLError and TimeoutError are OSError subclasses, so OSError covers them.
+        except (OSError, UnicodeError) as exc:
             self.failures += 1
             error = f"{type(exc).__name__}: {exc}"
         finally:
@@ -157,8 +154,8 @@ class Capture:
             time.sleep(self.delay)
 
         record: dict[str, object] = {
-            "captured_at": datetime.now(timezone.utc).isoformat(),
-            "stored_at": datetime.now(timezone.utc).isoformat(),
+            "captured_at": datetime.now(UTC).isoformat(),
+            "stored_at": datetime.now(UTC).isoformat(),
             "method": method,
             "request_key": hashlib.sha256(key.encode("utf-8")).hexdigest(),
             "url": url,
@@ -229,7 +226,12 @@ def detail_requests(
             continue
         # Do not collect student-directory forms: student identity is not needed
         # to recommend a laboratory or advisor.
-        form_fields = [(str(name), str(value)) for name, value in fields if name in {target, "name", "projectResearcher", "publicationResearcher", "thesisResearcher"}]
+        form_fields = [
+            (str(name), str(value))
+            for name, value in fields
+            if name
+            in {target, "name", "projectResearcher", "publicationResearcher", "thesisResearcher"}
+        ]
         action = urljoin(page_url, str(form.get("action") or ""))
         item_id = next((value for name, value in form_fields if name == target), "")
         if not item_id.isdigit():
@@ -248,17 +250,24 @@ def detail_requests(
 
 def main() -> int:
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--delay", type=float, default=1.0, help="seconds between requests (default: 1)")
+    cli.add_argument(
+        "--delay", type=float, default=1.0, help="seconds between requests (default: 1)"
+    )
     cli.add_argument(
         "--output",
         type=Path,
         default=Path(__file__).resolve().parent / "data" / "cic_raw" / "runs",
     )
-    cli.add_argument("--details-limit", type=int, default=None, help="limit detail POSTs for a pilot capture")
+    cli.add_argument(
+        "--details-limit", type=int, default=None, help="limit detail POSTs for a pilot capture"
+    )
     cli.add_argument(
         "--kinds",
         default="thesis",
-        help="comma-separated detail types to fetch (default: thesis; choices: thesis,project,publication)",
+        help=(
+            "comma-separated detail types to fetch "
+            "(default: thesis; choices: thesis,project,publication)"
+        ),
     )
     args = cli.parse_args()
     if args.delay < 0.5:
@@ -266,7 +275,7 @@ def main() -> int:
     selected_kinds = {kind.strip() for kind in args.kinds.split(",") if kind.strip()}
     if not selected_kinds or selected_kinds - set(DETAIL_FIELDS.values()):
         cli.error("--kinds must contain thesis, project, and/or publication")
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = args.output / run_id
     output.mkdir(parents=True, exist_ok=False)
     capture = Capture(output, args.delay)
@@ -275,13 +284,16 @@ def main() -> int:
             {
                 "run_id": run_id,
                 "extractor_version": EXTRACTOR_VERSION,
-                "started_at": datetime.now(timezone.utc).isoformat(),
+                "started_at": datetime.now(UTC).isoformat(),
                 "base_url": BASE,
                 "user_agent": USER_AGENT,
                 "delay_seconds": args.delay,
                 "detail_limit": args.details_limit,
                 "detail_kinds": sorted(selected_kinds),
-                "scope": "public labs, researchers, and publication/project/thesis detail pages; student detail pages excluded",
+                "scope": (
+                    "public labs, researchers, and publication/project/thesis detail pages; "
+                    "student detail pages excluded"
+                ),
             },
             indent=2,
         )
@@ -305,7 +317,8 @@ def main() -> int:
         # Also discover researchers linked from laboratory membership cards.
         page_parsers: dict[str, PageParser] = {}
         for url in sorted(lab_pages | researcher_pages):
-            content = capture.fetch(url, relative_path=f"pages/{'laboratories' if page_slug(url).startswith('lab_') else 'researchers'}/{page_slug(url)}")
+            section = "laboratories" if page_slug(url).startswith("lab_") else "researchers"
+            content = capture.fetch(url, relative_path=f"pages/{section}/{page_slug(url)}")
             if content:
                 page_parsers[url] = parse_page(content)
         for url, parser in page_parsers.items():
@@ -325,8 +338,9 @@ def main() -> int:
         if args.details_limit is not None:
             jobs = jobs[: max(0, args.details_limit)]
         print(
-            f"discovered {len(lab_pages)} laboratories, {len(researcher_pages)} researcher profiles, "
-            f"and {len(detail_jobs)} unique research detail forms; capturing {len(jobs)}",
+            f"discovered {len(lab_pages)} laboratories, "
+            f"{len(researcher_pages)} researcher profiles, and "
+            f"{len(detail_jobs)} unique research detail forms; capturing {len(jobs)}",
             flush=True,
         )
         for (kind, item_id), (endpoint, referrer, fields) in jobs:
@@ -344,7 +358,7 @@ def main() -> int:
     run_info = json.loads(run_info_path.read_text(encoding="utf-8"))
     run_info.update(
         {
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
             "request_count": capture.requests,
             "failure_count": capture.failures,
             "laboratory_pages": len(lab_pages),
@@ -353,7 +367,9 @@ def main() -> int:
             "detail_forms_selected": len(jobs),
         }
     )
-    run_info_path.write_text(json.dumps(run_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    run_info_path.write_text(
+        json.dumps(run_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
     print(
         f"finished: {output} ({capture.requests} requests, {capture.failures} failed)",

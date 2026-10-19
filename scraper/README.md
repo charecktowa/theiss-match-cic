@@ -78,3 +78,17 @@ normalization, and 51 titles differ. SABER's URL suffix differs from its row ID
 in 208 shared records, so ID matches and lab-name pairings remain reviewable
 claims, not automatic identity merges. Rebuild the comparison after selecting a
 new capture by passing `--run-dir`.
+
+## Dependencies and linting
+
+The scripts are standard-library only, so the project declares no runtime
+dependencies. It is still a uv project, like `backend/` and `experiments/`, so
+that ruff has a configuration of its own and CI has something to check:
+
+```bash
+uv sync
+uv run ruff check .
+uv run ruff format --check .
+```
+
+The same checks run as pre-commit hooks and in the `scraper` CI job.
