@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -20,9 +21,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+from runs import capture_problems, latest_run
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-DEFAULT_RUN = HERE / "data" / "cic_raw" / "runs" / "20261018T215744Z"
 DEFAULT_SCHEMA = ROOT / "db" / "cic_scrape" / "01_schema.sql"
 DEFAULT_EXPORT = ROOT / "data" / "cic_scrape.sql"
 BASE_URL = "https://www.cic.ipn.mx"
@@ -114,13 +116,14 @@ def form_id(row_html: str, key: str) -> str | None:
     return None
 
 
-def page_display_name(page: str, fallback: str) -> str:
+def page_display_name(page: str) -> str | None:
+    """The researcher's name, or None when the page is not a researcher profile."""
     match = re.search(
         r"<title>\s*(?:Investigador|Investigadora)\s+(.*?)</title>",
         page,
         re.IGNORECASE | re.DOTALL,
     )
-    return text_of(match.group(1)) if match else fallback
+    return text_of(match.group(1)) if match else None
 
 
 def parse_detail(path: Path) -> dict[str, Any] | None:
@@ -147,7 +150,7 @@ def parse_detail(path: Path) -> dict[str, Any] | None:
                 r"<li\b[^>]*>(.*?)</li>", committee_match.group(1), re.IGNORECASE | re.DOTALL
             )
         ]
-        committee = [name for name in committee if name]
+        committee = [name.rstrip(" -") for name in committee if name.rstrip(" -")]
     return {
         "id": path.stem,
         "title": text_of(title.group(1)),
@@ -163,15 +166,23 @@ def load_manifest(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return run, [json.loads(line) for line in lines if line.strip()]
 
 
-def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
-    document_ids: dict[str, int] = {}
+def archive_root(run_dir: Path) -> str:
+    """Where the run's files are, relative to the repository when it is inside it."""
+    resolved = run_dir.resolve()
+    try:
+        return resolved.relative_to(ROOT).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
+def make_catalog(
+    run_dir: Path, run: dict[str, Any], records: list[dict[str, Any]]
+) -> dict[str, Any]:
     documents: list[dict[str, Any]] = []
-    run = json.loads((run_dir / RUN_JSON).read_text(encoding="utf-8"))
     run_id = run["run_id"]
+    root = archive_root(run_dir)
     for doc_id, record in enumerate(records, start=1):
         path = record.get("path")
-        if path:
-            document_ids.setdefault(path, doc_id)
         form = record.get("form")
         documents.append(
             {
@@ -191,7 +202,7 @@ def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]
                 "stored_at": record.get("stored_at")
                 or record.get("captured_at")
                 or run.get("completed_at"),
-                "archive_path": f"scraper/data/cic_raw/runs/{run_id}/{path}" if path else None,
+                "archive_path": f"{root}/{path}" if path else None,
                 "sha256": record.get("sha256"),
                 "error": record.get("error"),
             }
@@ -245,43 +256,74 @@ def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]
                 member_slug = Path(unquote(unescape(href))).stem
                 lab_member_name_keys[path.stem].add(name_key(member_slug.replace("-", " ")))
 
+    # Each CIC profile is one person, keyed by its slug: a name is only evidence
+    # for a match, never an identity, so two people who share a name (or one
+    # person whose name is spelled two ways) are not merged on their own.
+    data_issues: list[dict[str, Any]] = []
     researchers: dict[str, dict[str, Any]] = {}
     memberships: dict[str, set[str]] = defaultdict(set)
-    profiles = {path.stem: path for path in researcher_files}
     for path in researcher_files:
         page = path.read_text(encoding="utf-8", errors="replace")
-        name = page_display_name(page, path.stem)
+        relative = f"pages/researchers/{path.name}"
+        source_id = doc_by_path.get(relative)
+        name = page_display_name(page)
+        if name is None:
+            data_issues.append(
+                {
+                    "entity_type": "source_document",
+                    "entity_key": relative,
+                    "code": "not_a_researcher_profile",
+                    "detail": "Archived as a researcher page, but its title names no researcher.",
+                    "source_document_id": source_id,
+                }
+            )
+            continue
         researchers[path.stem] = {
             "name": name,
-            "source_document_id": doc_by_path.get(f"pages/researchers/{path.name}"),
-            "profile_url": INVESTIGATION_URL + path.name,
+            "source_document_id": source_id,
+            # The requested URL, not the file name: the archive's file names
+            # replace non-ASCII characters, so they do not round-trip to a URL.
+            "profile_url": documents[source_id - 1]["request_url"]
+            if source_id
+            else INVESTIGATION_URL + path.name,
         }
-    profile_slug_by_name_key = {
-        name_key(person["name"]): slug for slug, person in researchers.items()
-    }
-    for lab_slug, member_name_keys in lab_member_name_keys.items():
-        for member_name_key in member_name_keys:
-            profile_slug = profile_slug_by_name_key.get(member_name_key)
-            if profile_slug is not None:
-                memberships[profile_slug].add(lab_slug)
+    profiles = {slug: run_dir / "pages" / "researchers" / f"{slug}.php" for slug in researchers}
+    profile_slugs_by_name_key: dict[str, list[str]] = defaultdict(list)
+    for slug, researcher in researchers.items():
+        profile_slugs_by_name_key[name_key(researcher["name"])].append(slug)
+    for lab_slug, member_name_keys in sorted(lab_member_name_keys.items()):
+        ambiguous = []
+        for member_name_key in sorted(member_name_keys):
+            candidates = profile_slugs_by_name_key.get(member_name_key, [])
+            if len(candidates) == 1:
+                memberships[candidates[0]].add(lab_slug)
+            elif candidates:
+                ambiguous.append(", ".join(sorted(candidates)))
+        if ambiguous:
+            data_issues.append(
+                {
+                    "entity_type": "laboratory",
+                    "entity_key": lab_slug,
+                    "code": "ambiguous_member_name",
+                    "detail": "Member links match several profiles: " + "; ".join(ambiguous),
+                    "source_document_id": laboratories[lab_slug]["source_document_id"],
+                }
+            )
 
     persons_by_key: dict[str, dict[str, Any]] = {}
     profile_person_key: dict[str, str] = {}
     for slug, researcher in researchers.items():
-        key = name_key(researcher["name"])
+        key = f"profile:{slug}"
         profile_person_key[slug] = key
-        persons_by_key.setdefault(
-            key,
-            {
-                "display_name": researcher["name"],
-                "name_key": key,
-                "email": None,
-                "profile_url": researcher["profile_url"],
-                "source_document_id": researcher["source_document_id"],
-                "reviewed_identity": False,
-                "profile_slug": slug,
-            },
-        )
+        persons_by_key[key] = {
+            "display_name": researcher["name"],
+            "name_key": name_key(researcher["name"]),
+            "email": None,
+            "profile_url": researcher["profile_url"],
+            "source_document_id": researcher["source_document_id"],
+            "reviewed_identity": False,
+            "profile_slug": slug,
+        }
 
     details: dict[str, dict[str, Any]] = {}
     for path in sorted(
@@ -298,11 +340,18 @@ def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]
     product_authors: dict[str, set[str]] = defaultdict(set)
     projects: dict[str, dict[str, Any]] = {}
     project_members: dict[str, dict[str, str]] = defaultdict(dict)
-    data_issues: list[dict[str, Any]] = []
-    # catalog.data_issue is unique on (entity_type, entity_key, code), so the
-    # titles that disagree across profiles are collected and emitted as one
-    # issue per entity instead of one per disagreeing profile.
-    title_conflicts: dict[tuple[str, str], set[str]] = defaultdict(set)
+    # Profiles can describe the same product or project differently. The first
+    # profile's value is kept and every other value is reported. data_issue is
+    # unique on (entity_type, entity_key, code), so disagreements are collected
+    # and emitted as one issue per entity and field, not one per profile.
+    field_conflicts: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+
+    def note_conflicts(
+        entity_type: str, existing: dict[str, Any], candidate: dict[str, Any], fields: list[str]
+    ) -> None:
+        for field in fields:
+            if existing[field] != candidate[field]:
+                field_conflicts[(entity_type, existing["id"], field)].add(str(candidate[field]))
 
     for slug, path in profiles.items():
         page = path.read_text(encoding="utf-8", errors="replace")
@@ -325,6 +374,9 @@ def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]
                 )
                 tab1 = page.rfind('id="tab1"', 0, match.start())
                 tab2 = page.rfind('id="tab2"', 0, match.start())
+                # tab1 lists concluded theses. tab2 is left `unknown` on purpose:
+                # checked against SABER, it mixes enrolled students with
+                # graduates and does not separate withdrawals.
                 if tab1 > tab2:
                     thesis_status[thesis_id] = "graduated"
 
@@ -351,8 +403,10 @@ def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]
                 existing = products.get(publication_id)
                 if existing is None:
                     products[publication_id] = candidate
-                elif existing["title"] != title:
-                    title_conflicts[("research_product", publication_id)].add(title)
+                else:
+                    note_conflicts(
+                        "research_product", existing, candidate, ["title", "kind", "year", "venue"]
+                    )
                 product_authors[publication_id].add(person_key)
 
             project_id = form_id(row, "id_proy")
@@ -377,50 +431,96 @@ def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]
                 existing = projects.get(project_id)
                 if existing is None:
                     projects[project_id] = candidate
-                elif existing["title"] != title:
-                    title_conflicts[("research_project", project_id)].add(title)
+                else:
+                    note_conflicts("research_project", existing, candidate, ["title", "year"])
                 project_members[project_id][person_key] = role
 
-    for (entity_type, entity_key), other_titles in sorted(title_conflicts.items()):
+    for (entity_type, entity_key, field), other_values in sorted(field_conflicts.items()):
         entity = (products if entity_type == "research_product" else projects)[entity_key]
         data_issues.append(
             {
                 "entity_type": entity_type,
                 "entity_key": entity_key,
-                "code": "conflicting_titles_across_profiles",
-                "detail": " | ".join([entity["title"], *sorted(other_titles)]),
+                "code": f"conflicting_{field}s_across_profiles",
+                "detail": " | ".join([str(entity[field]), *sorted(other_values)]),
                 "source_document_id": entity["source_document_id"],
             }
         )
 
-    for detail in details.values():
+    # A thesis listed on a profile whose detail page is missing cannot be loaded
+    # (its title comes from the detail page), so the gap is recorded instead.
+    for thesis_key in sorted(set(thesis_advisors) - set(details), key=int):
+        rows = thesis_advisors[thesis_key]
+        data_issues.append(
+            {
+                "entity_type": "thesis",
+                "entity_key": thesis_key,
+                "code": "thesis_detail_missing",
+                "detail": (
+                    f"{len(rows)} profile row(s) list this thesis, but its detail page was not "
+                    "archived or could not be parsed; the thesis and its advisors are not loaded."
+                ),
+                "source_document_id": rows[0]["source_document_id"],
+            }
+        )
+
+    # A committee name joins a profile only when exactly one profile has its
+    # name key. Otherwise it is an external person keyed by the name, and a
+    # name that matches several profiles is reported for review.
+    committee_keys: dict[str, list[str]] = {}
+    aliases: set[tuple[str, str, int | None]] = set()
+    for thesis_key, detail in details.items():
+        keys: list[str] = []
+        ambiguous: list[str] = []
         for committee_name in detail["committee"]:
             key = name_key(committee_name)
-            persons_by_key.setdefault(
-                key,
+            candidates = profile_slugs_by_name_key.get(key, [])
+            if len(candidates) == 1:
+                person_key = profile_person_key[candidates[0]]
+            else:
+                person_key = f"name:{key}"
+                if candidates:
+                    ambiguous.append(committee_name)
+                persons_by_key.setdefault(
+                    person_key,
+                    {
+                        "display_name": committee_name,
+                        "name_key": key,
+                        "email": None,
+                        "profile_url": None,
+                        "source_document_id": detail["source_document_id"],
+                        "reviewed_identity": False,
+                        "profile_slug": None,
+                    },
+                )
+            if committee_name != persons_by_key[person_key]["display_name"]:
+                aliases.add((person_key, committee_name, detail["source_document_id"]))
+            keys.append(person_key)
+        committee_keys[thesis_key] = keys
+        if ambiguous:
+            data_issues.append(
                 {
-                    "display_name": committee_name,
-                    "name_key": key,
-                    "email": None,
-                    "profile_url": None,
+                    "entity_type": "thesis",
+                    "entity_key": thesis_key,
+                    "code": "ambiguous_committee_name",
+                    "detail": "Committee names match several profiles: " + "; ".join(ambiguous),
                     "source_document_id": detail["source_document_id"],
-                    "reviewed_identity": False,
-                    "profile_slug": None,
-                },
+                }
             )
 
     return {
         "run_id": run_id,
         "run": run,
         "documents": documents,
-        "document_ids": document_ids,
         "doc_by_path": doc_by_path,
         "line_names": line_names,
         "laboratories": laboratories,
         "researchers": researchers,
         "memberships": memberships,
         "persons": persons_by_key,
+        "aliases": aliases,
         "details": details,
+        "committee_keys": committee_keys,
         "thesis_advisors": thesis_advisors,
         "thesis_status": thesis_status,
         "products": products,
@@ -431,8 +531,10 @@ def make_catalog(run_dir: Path, records: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
-def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str], dict[str, int]]:
-    data = make_catalog(run_dir, records)
+def make_inserts(
+    run_dir: Path, run: dict[str, Any], records: list[dict[str, Any]], notes: str = CAPTURE_RUN_NOTE
+) -> tuple[list[str], dict[str, int]]:
+    data = make_catalog(run_dir, run, records)
     lines: list[str] = []
     lines.append(
         insert_sql(
@@ -443,7 +545,7 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
                 "started_at": data["run"].get("started_at"),
                 "finished_at": data["run"].get("completed_at"),
                 "extractor_version": data["run"].get("extractor_version", "0.1.0"),
-                "notes": CAPTURE_RUN_NOTE,
+                "notes": notes,
             },
         )
     )
@@ -523,8 +625,12 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
     for code, program in sorted(programs.items()):
         lines.append(insert_sql("catalog.program", {"code": code, **program}))
 
-    person_ids = {key: index for index, key in enumerate(sorted(data["persons"]), start=1)}
-    for key, person in sorted(data["persons"].items()):
+    # Ordered by name key, as IDs were before profiles became identities, so a
+    # re-export keeps them; the person key breaks ties between shared names.
+    person_order = sorted(data["persons"], key=lambda key: (data["persons"][key]["name_key"], key))
+    person_ids = {key: index for index, key in enumerate(person_order, start=1)}
+    for key in person_order:
+        person = data["persons"][key]
         person_id = person_ids[key]
         lines.append(
             insert_sql(
@@ -553,17 +659,26 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
                 )
             )
 
+    for person_key, name_seen, source_document_id in sorted(
+        data["aliases"], key=lambda alias: (alias[0], alias[1], alias[2] or 0)
+    ):
+        lines.append(
+            insert_sql(
+                "catalog.person_alias",
+                {
+                    "person_id": person_ids[person_key],
+                    "name_seen": name_seen,
+                    "name_key": name_key(name_seen),
+                    "source_document_id": source_document_id,
+                    "reviewed_match": False,
+                },
+            )
+        )
+
     affiliation_ids: dict[str, list[int]] = defaultdict(list)
-    profile_slugs_by_person_key: dict[str, list[str]] = defaultdict(list)
-    for profile_slug, researcher in data["researchers"].items():
-        profile_slugs_by_person_key[name_key(researcher["name"])].append(profile_slug)
     affiliation_id = 1
     for profile_slug, lab_slugs in sorted(data["memberships"].items()):
-        person_id = (
-            person_ids[data["researchers"][profile_slug]["name_key"]]
-            if "name_key" in data["researchers"][profile_slug]
-            else person_ids[name_key(data["researchers"][profile_slug]["name"])]
-        )
+        person_id = person_ids[f"profile:{profile_slug}"]
         for lab_slug in sorted(lab_slugs):
             source_id = data["laboratories"][lab_slug]["source_document_id"]
             lines.append(
@@ -593,13 +708,10 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
     # A publication or project can have several participants from the same
     # laboratory, so the pairs are deduplicated once here: the catalog's primary
     # keys allow each (entity, laboratory) pair only once.
-    labs_by_person_key: dict[str, list[tuple[int, int | None]]] = {}
-    for person_key, slugs in profile_slugs_by_person_key.items():
-        distinct: dict[int, int | None] = {}
-        for slug in slugs:
-            for laboratory_id in affiliation_ids.get(slug, []):
-                distinct.setdefault(laboratory_id, lab_source_by_id.get(laboratory_id))
-        labs_by_person_key[person_key] = sorted(distinct.items())
+    labs_by_person_key: dict[str, list[tuple[int, int | None]]] = {
+        f"profile:{slug}": [(lab_id, lab_source_by_id.get(lab_id)) for lab_id in sorted(lab_list)]
+        for slug, lab_list in affiliation_ids.items()
+    }
 
     thesis_ids = {
         thesis_key: index
@@ -609,10 +721,9 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
     # Counted as rows are emitted: the export header must equal the number of
     # catalog.data_issue rows the restore actually ends up holding.
     thesis_issue_rows = 0
-    for external_thesis_id in sorted(set(data["details"]) | set(advisor_rows_by_thesis), key=int):
-        detail = data["details"].get(external_thesis_id)
-        if not detail:
-            continue
+    # Theses without a detail page are reported by make_catalog, not loaded.
+    for external_thesis_id in sorted(data["details"], key=int):
+        detail = data["details"][external_thesis_id]
         thesis_id = thesis_ids[external_thesis_id]
         status = data["thesis_status"].get(external_thesis_id, "unknown")
         lines.append(
@@ -666,13 +777,7 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
             role = row["role"]
             if role == "primary_advisor" and primary_count > 1:
                 role = "unknown"
-            candidate_labs = sorted(
-                {
-                    lab_id
-                    for profile_slug in profile_slugs_by_person_key.get(row["person_key"], [])
-                    for lab_id in affiliation_ids.get(profile_slug, [])
-                }
-            )
+            candidate_labs = [lab_id for lab_id, _ in labs_by_person_key.get(row["person_key"], [])]
             assigned_lab = (
                 candidate_labs[0]
                 if role == "primary_advisor" and len(candidate_labs) == 1
@@ -715,8 +820,8 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
             )
 
         committee_seen: set[int] = set()
-        for order, committee_name in enumerate(detail["committee"], start=1):
-            person_id = person_ids[name_key(committee_name)]
+        for order, person_key in enumerate(data["committee_keys"][external_thesis_id], start=1):
+            person_id = person_ids[person_key]
             if person_id in committee_seen:
                 continue
             committee_seen.add(person_id)
@@ -894,23 +999,43 @@ def make_inserts(run_dir: Path, records: list[dict[str, Any]]) -> tuple[list[str
         "theses_with_advisor_profile": len(data["thesis_advisors"]),
         "publications_and_conferences": len(data["products"]),
         "projects": len(data["projects"]),
-        "committee_people": len(data["persons"]) - len(data["researchers"]),
-        "source_conflict_issues": len(data["data_issues"]),
+        "committee_people": sum(
+            1 for person in data["persons"].values() if not person["profile_slug"]
+        ),
+        "person_aliases": len(data["aliases"]),
+        "catalog_issue_rows": len(data["data_issues"]),
         "thesis_issue_rows": thesis_issue_rows,
     }
     # The header must match what the restore ends up holding, so the total counts
     # rows as they are emitted instead of re-deriving them from the source data.
-    counts["total_catalog_data_issues"] = (
-        counts["source_conflict_issues"] + counts["thesis_issue_rows"]
-    )
+    counts["total_catalog_data_issues"] = counts["catalog_issue_rows"] + counts["thesis_issue_rows"]
     return lines, counts
 
 
-def build(run_dir: Path, schema: Path, export_path: Path, database_name: str) -> dict[str, int]:
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", database_name):
-        raise ValueError("Database name must be a simple PostgreSQL identifier.")
+def build(
+    run_dir: Path,
+    schema: Path,
+    export_path: Path,
+    database_name: str,
+    *,
+    allow_incomplete: bool = False,
+) -> dict[str, int]:
+    # Lowercase only: an unquoted identifier is folded to lowercase, so any other
+    # name would create one database and \connect to another.
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", database_name):
+        raise ValueError("Database name must be a lowercase PostgreSQL identifier.")
     run, records = load_manifest(run_dir)
-    inserts, counts = make_inserts(run_dir, records)
+    notes = CAPTURE_RUN_NOTE
+    problems = capture_problems(run, records)
+    if problems:
+        if not allow_incomplete:
+            raise SystemExit(
+                f"Capture at {run_dir} is incomplete: "
+                + "; ".join(problems)
+                + ". Re-run the capture, or pass --allow-incomplete to export it anyway."
+            )
+        notes += " Incomplete capture: " + "; ".join(problems) + "."
+    inserts, counts = make_inserts(run_dir, run, records, notes)
     schema_sql = schema.read_text(encoding="utf-8")
     output = [
         "-- Generated CIC catalog database; data snapshot " + run["run_id"],
@@ -925,26 +1050,44 @@ def build(run_dir: Path, schema: Path, export_path: Path, database_name: str) ->
         f"\\connect {database_name}",
         "SET client_encoding = 'UTF8';",
         "SET standard_conforming_strings = on;",
+        # Everything after CREATE DATABASE is one transaction, so a failed restore
+        # leaves an empty database rather than a partial catalog.
+        "BEGIN;",
         schema_sql,
         "-- Parsed CIC records and source-provenance manifest.",
         *inserts,
+        "COMMIT;",
         "-- Export counts: " + json.dumps(counts, ensure_ascii=False, sort_keys=True),
         "",
     ]
+    # Written beside the target and renamed into place, so a failed build never
+    # leaves a truncated export where the previous one was.
     export_path.parent.mkdir(parents=True, exist_ok=True)
-    export_path.write_text("\n".join(output), encoding="utf-8")
+    partial = export_path.with_name(export_path.name + ".partial")
+    partial.write_text("\n".join(output), encoding="utf-8")
+    os.replace(partial, export_path)
     return counts
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN)
+    parser.add_argument(
+        "--run-dir", type=Path, default=None, help="capture run (default: the newest finished)"
+    )
     parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA)
     parser.add_argument("--output", type=Path, default=DEFAULT_EXPORT)
     parser.add_argument("--database", default="cic_scrape")
+    parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="export a run with unfinished or failed requests, noting it in raw.capture_run",
+    )
     args = parser.parse_args()
-    counts = build(args.run_dir, args.schema, args.output, args.database)
-    print(f"PostgreSQL export: {args.output}")
+    run_dir = args.run_dir or latest_run()
+    counts = build(
+        run_dir, args.schema, args.output, args.database, allow_incomplete=args.allow_incomplete
+    )
+    print(f"PostgreSQL export of {run_dir}: {args.output}")
     print(json.dumps(counts, ensure_ascii=False, indent=2, sort_keys=True))
 
 
