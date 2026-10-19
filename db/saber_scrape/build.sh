@@ -9,10 +9,14 @@ target=${TARGET_DB:-saber_scrape}
 case $target in
     *[!a-z0-9_]* | '') echo "TARGET_DB must be a lowercase identifier" >&2; exit 1 ;;
 esac
-if [ "$target" = theiss ]; then
-    echo "refusing to overwrite the original theiss database" >&2
-    exit 1
-fi
+# The target is dropped, so every database the stack depends on is refused:
+# the application's (theiss, or POSTGRES_DB when compose overrides it), the
+# server's own, and the CIC catalog.
+case $target in
+    theiss | "${POSTGRES_DB:-theiss}" | postgres | template0 | template1 | cic_scrape)
+        echo "refusing to drop and rebuild the $target database" >&2
+        exit 1 ;;
+esac
 
 # $1 is the database to connect to; the SQL comes from stdin. The single
 # quotes keep $POSTGRES_USER for the container's shell, as in the README.

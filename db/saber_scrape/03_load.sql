@@ -87,18 +87,23 @@ SELECT r.id AS raw_id,
 FROM raw.research_products r
 LEFT JOIN venue_alias a ON a.from_key = catalog.match_key(r.site);
 
--- Each venue is named after its most common spelling.
+-- Each venue is named after its most common canonical spelling; an aliased
+-- spelling names it only when no row uses the canonical one.
 INSERT INTO catalog.venue (name)
 SELECT DISTINCT ON (venue_key) site
 FROM (SELECT venue_key, site, count(*) AS n FROM product_clean GROUP BY 1, 2) s
-ORDER BY venue_key, n DESC, site;
+ORDER BY venue_key, catalog.match_key(site) = venue_key DESC, n DESC, site;
 
--- The row with the lowest raw ID represents each merged product. The LEFT JOIN
--- makes a venue that failed to match hit NOT NULL rather than drop the row.
+-- The row with the lowest raw ID represents each merged product. A venue is
+-- found through the alias too, since it can be named by an aliased spelling.
+-- The LEFT JOIN makes a venue that failed to match hit NOT NULL rather than
+-- drop the row.
 INSERT INTO catalog.research_product (id, title, year, venue_id)
 SELECT p.raw_id, p.title, p.year, v.id
 FROM product_clean p
-LEFT JOIN catalog.venue v ON catalog.match_key(v.name) = p.venue_key
+LEFT JOIN catalog.venue v
+    ON coalesce((SELECT a.to_key FROM venue_alias a WHERE a.from_key = catalog.match_key(v.name)),
+                catalog.match_key(v.name)) = p.venue_key
 WHERE p.raw_id = p.product_id;
 
 INSERT INTO catalog.product_source (raw_id, product_id)

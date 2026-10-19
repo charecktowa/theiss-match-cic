@@ -8,6 +8,9 @@ db/saber_scrape/build.sh          # builds saber_scrape (drops and rebuilds it i
 TARGET_DB=scratch db/saber_scrape/build.sh  # same, under another name
 ```
 
+`TARGET_DB` is dropped first, so the build refuses the databases the stack
+relies on: `theiss` (or `POSTGRES_DB`), `postgres`, the templates and `cic_scrape`.
+
 The build restores `data/saber_sip.sql`, then runs the four scripts here in a
 single transaction. `04_checks.sql` asserts that nothing was lost or invented;
 if any check fails, the transaction rolls back and the database is left holding
@@ -20,6 +23,11 @@ only the restored dump.
 | `raw` | The dump as scraped, minus embeddings | the build only |
 | `catalog` | Labs, professors, students, programs, theses, products, cleaned | the build only |
 | `app` | Accounts, thesis ideas, advisor and lab requests | the application |
+
+**Student records.** Unlike `cic_scrape`, which leaves students out, this
+database keeps the export's student names and emails in `catalog.student`: they
+were already in the one-time SABER export, and theses link to them through
+enrollments. Keep the database local, like the dump it comes from.
 
 **No embeddings.** There are no vector columns and the `vector` extension is not
 installed, so any embedding model can be compared from a clean slate. The
