@@ -12,7 +12,7 @@ db/init/        SQL that runs once, when the database volume is first created
 db/saber_scrape/ builds saber_scrape from the frozen SABER export (see its README)
 db/cic_scrape/  reproducible CIC catalog schema and pgvector extension setup
 scraper/        CIC capture, parsing, and comparison code; raw HTML stays local
-data/           datasets (ignored) and CIC SQL snapshot (explicitly included)
+data/           datasets and generated SQL exports (ignored: inputs, not code)
 experiments/    marimo notebooks; its own uv project, separate from the API
 frontend/       UI (planned; technology not chosen yet)
 ```
