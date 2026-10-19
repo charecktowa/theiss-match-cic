@@ -66,6 +66,7 @@ whether a student withdrew.
 | `thesis_detail_missing` | A profile lists the thesis, but its detail page is missing (only with `--allow-incomplete`) |
 | `ambiguous_committee_name` | A committee name matches several profiles |
 | `ambiguous_member_name` | A lab member link matches several profiles |
+| `unmatched_member_link` | A lab member link matches no archived profile; no affiliation is recorded |
 | `not_a_researcher_profile` | An archived researcher page names no researcher; it is skipped |
 | `conflicting_<field>s_across_profiles` | Profiles disagree on a product's or project's title, kind, year or venue; the first value is kept |
 

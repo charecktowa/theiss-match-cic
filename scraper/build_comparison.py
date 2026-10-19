@@ -17,7 +17,7 @@ from collections import defaultdict
 from html.parser import HTMLParser
 from pathlib import Path
 
-from runs import latest_run
+from runs import capture_problems, latest_run
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DUMP = ROOT / "data" / "saber_sip.sql"
@@ -197,9 +197,15 @@ def capture_gaps(run_dir: Path, cic: dict[str, object]) -> list[str]:
     if not run_json.exists():
         return [f"{run_json} does not exist"]
     run = json.loads(run_json.read_text(encoding="utf-8"))
-    gaps = []
-    if not run.get("completed_at"):
-        gaps.append("the capture did not finish")
+    manifest = run_dir / "manifest.jsonl"
+    if not manifest.exists():
+        return [f"{manifest} does not exist"]
+    records = [
+        json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line
+    ]
+    # An unfinished run or a request that never archived a response would make
+    # the missing records look absent from CIC, so both are refused like the export.
+    gaps = capture_problems(run, records)
     if not cic["laboratories"]:
         gaps.append("no laboratory pages")
     if not cic["researcher_pages"]:

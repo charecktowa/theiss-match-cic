@@ -292,13 +292,25 @@ def make_catalog(
     for slug, researcher in researchers.items():
         profile_slugs_by_name_key[name_key(researcher["name"])].append(slug)
     for lab_slug, member_name_keys in sorted(lab_member_name_keys.items()):
-        ambiguous = []
+        ambiguous, unmatched = [], []
         for member_name_key in sorted(member_name_keys):
             candidates = profile_slugs_by_name_key.get(member_name_key, [])
             if len(candidates) == 1:
                 memberships[candidates[0]].add(lab_slug)
             elif candidates:
                 ambiguous.append(", ".join(sorted(candidates)))
+            else:
+                unmatched.append(member_name_key)
+        if unmatched:
+            data_issues.append(
+                {
+                    "entity_type": "laboratory",
+                    "entity_key": lab_slug,
+                    "code": "unmatched_member_link",
+                    "detail": "Member links match no archived profile: " + "; ".join(unmatched),
+                    "source_document_id": laboratories[lab_slug]["source_document_id"],
+                }
+            )
         if ambiguous:
             data_issues.append(
                 {

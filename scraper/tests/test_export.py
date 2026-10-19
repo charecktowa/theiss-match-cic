@@ -32,6 +32,19 @@ def test_profiles_that_share_a_name_stay_two_people(run_builder: RunBuilder) -> 
     assert len(issues(data, "ambiguous_committee_name")) == 1
 
 
+def test_lab_link_without_a_profile_is_reported(run_builder: RunBuilder) -> None:
+    run_builder.researcher("ana-ruiz", "Ana Ruiz")
+    run_builder.lab("lab_a", "Laboratorio A", ["ana-ruiz", "luis-mora"])
+    data = catalog(run_builder.write())
+
+    assert data["memberships"] == {"ana-ruiz": {"lab_a"}}
+    [issue] = issues(data, "unmatched_member_link")
+    assert (issue["entity_key"], issue["detail"]) == (
+        "lab_a",
+        "Member links match no archived profile: luis mora",
+    )
+
+
 def test_committee_name_variant_joins_its_profile_as_an_alias(run_builder: RunBuilder) -> None:
     run_builder.researcher("maria-lopez", "María López", graduated=[("11", "Director 1")])
     run_builder.lab("lab_a", "Laboratorio A", ["maria-lopez"])

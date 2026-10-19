@@ -9,11 +9,18 @@ target=${TARGET_DB:-saber_scrape}
 case $target in
     *[!a-z0-9_]* | '') echo "TARGET_DB must be a lowercase identifier" >&2; exit 1 ;;
 esac
+# The application's database is read from the db container itself: compose can
+# take POSTGRES_DB from .env without exporting it to this shell. If it cannot be
+# read, nothing is dropped.
+app_db=$(docker compose exec -T db sh -c 'printf %s "$POSTGRES_DB"') || app_db=
+if [ -z "$app_db" ]; then
+    echo "could not read POSTGRES_DB from the db container; refusing to drop anything" >&2
+    exit 1
+fi
 # The target is dropped, so every database the stack depends on is refused:
-# the application's (theiss, or POSTGRES_DB when compose overrides it), the
-# server's own, and the CIC catalog.
+# the application's, the server's own, and the CIC catalog.
 case $target in
-    theiss | "${POSTGRES_DB:-theiss}" | postgres | template0 | template1 | cic_scrape)
+    theiss | "$app_db" | postgres | template0 | template1 | cic_scrape)
         echo "refusing to drop and rebuild the $target database" >&2
         exit 1 ;;
 esac
