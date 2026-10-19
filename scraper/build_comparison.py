@@ -13,10 +13,8 @@ import re
 import sqlite3
 import unicodedata
 from collections import defaultdict
-from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DUMP = ROOT / "data" / "saber_sip.sql"
@@ -42,7 +40,7 @@ def html_text(fragment: str) -> str:
 def normalize_title(value: str | None) -> str | None:
     if value is None:
         return None
-    value = value.strip().strip('"“”\'')
+    value = value.strip().strip("\"“”'")
     value = unicodedata.normalize("NFC", value)
     return re.sub(r"\s+", " ", value).casefold()
 
@@ -72,11 +70,15 @@ def decode_copy_field(value: str) -> str | None:
         if nxt in escapes:
             result.append(escapes[nxt])
             index += 2
-        elif nxt == "x" and index + 3 < len(value) and re.fullmatch(r"[0-9A-Fa-f]{2}", value[index + 2:index + 4]):
-            result.append(chr(int(value[index + 2:index + 4], 16)))
+        elif (
+            nxt == "x"
+            and index + 3 < len(value)
+            and re.fullmatch(r"[0-9A-Fa-f]{2}", value[index + 2 : index + 4])
+        ):
+            result.append(chr(int(value[index + 2 : index + 4], 16)))
             index += 4
         elif nxt in "01234567":
-            match = re.match(r"[0-7]{1,3}", value[index + 1:])
+            match = re.match(r"[0-7]{1,3}", value[index + 1 :])
             assert match is not None
             result.append(chr(int(match.group(0), 8)))
             index += 1 + len(match.group(0))
@@ -100,14 +102,24 @@ def parse_pg_copy(dump_path: Path) -> dict[str, list[dict[str, str | None]]]:
         for line in body.splitlines():
             values = [decode_copy_field(value) for value in line.split("\t")]
             if len(values) != len(columns):
-                raise ValueError(f"COPY parse error in {table}: expected {len(columns)} fields, got {len(values)}")
-            rows.append(dict(zip(columns, values)))
+                raise ValueError(
+                    f"COPY parse error in {table}: expected {len(columns)} fields, "
+                    f"got {len(values)}"
+                )
+            rows.append(dict(zip(columns, values, strict=True)))
         tables[table] = rows
     return tables
 
 
 def extract_forms(row_html: str, field_name: str) -> list[str]:
-    return re.findall(rf'name="{re.escape(field_name)}"\s+value="(\d+)"', row_html, re.IGNORECASE)
+    """Values submitted by `field_name`, independent of attribute order."""
+    values: list[str] = []
+    for tag in re.findall(r"<input\b[^>]*>", row_html, re.IGNORECASE):
+        attributes = dict(re.findall(r'([\w-]+)\s*=\s*"([^"]*)"', tag))
+        value = attributes.get("value", "")
+        if attributes.get("name") == field_name and value.isdigit():
+            values.append(value)
+    return values
 
 
 def extract_cic(run_dir: Path) -> dict[str, object]:
@@ -127,14 +139,24 @@ def extract_cic(run_dir: Path) -> dict[str, object]:
     profile_by_name: dict[str, str] = {}
     for path in researcher_pages:
         page = path.read_text(encoding="utf-8", errors="replace")
-        title_match = re.search(r"<title>\s*(?:Investigador|Investigadora)\s+(.*?)\s*</title>", page, re.IGNORECASE | re.DOTALL)
+        title_match = re.search(
+            r"<title>\s*(?:Investigador|Investigadora)\s+(.*?)</title>",
+            page,
+            re.IGNORECASE | re.DOTALL,
+        )
         researcher = html_text(title_match.group(1)) if title_match else path.stem
         researcher_names.add(researcher)
         profile_by_name[normalize_name(researcher) or ""] = researcher
         for row in re.findall(r"<tr\b[^>]*>.*?</tr>", page, re.IGNORECASE | re.DOTALL):
-            cells = [html_text(cell) for cell in re.findall(r"<td\b[^>]*>(.*?)</td>", row, re.IGNORECASE | re.DOTALL)]
+            cells = [
+                html_text(cell)
+                for cell in re.findall(r"<td\b[^>]*>(.*?)</td>", row, re.IGNORECASE | re.DOTALL)
+            ]
             for thesis_id in extract_forms(row, "id_tet"):
-                role = next((value for value in cells if value.casefold() in {"director 1", "director 2"}), "unknown")
+                role = next(
+                    (value for value in cells if value.casefold() in {"director 1", "director 2"}),
+                    "unknown",
+                )
                 thesis_roles[thesis_id].append(f"{role}: {researcher}")
             for publication_id in extract_forms(row, "id_pub"):
                 publications.setdefault(publication_id, cells[0] if cells else "")
@@ -146,7 +168,13 @@ def extract_cic(run_dir: Path) -> dict[str, object]:
         "laboratories": {
             path.stem: html_text(match.group(1))
             for path in lab_pages
-            if (match := re.search(r"<title>\s*(.*?)\s*</title>", path.read_text(encoding="utf-8", errors="replace"), re.IGNORECASE | re.DOTALL))
+            if (
+                match := re.search(
+                    r"<title>(.*?)</title>",
+                    path.read_text(encoding="utf-8", errors="replace"),
+                    re.IGNORECASE | re.DOTALL,
+                )
+            )
         },
         "researcher_pages": researcher_pages,
         "theses": thesis_details,
@@ -159,8 +187,14 @@ def extract_cic(run_dir: Path) -> dict[str, object]:
 
 
 def build(dump: Path, run_dir: Path, db_path: Path) -> None:
-    saber = parse_pg_copy(dump)
     cic = extract_cic(run_dir)
+    # Validate before the existing comparison is deleted: a missing or empty
+    # capture would otherwise write a database reporting zero CIC records.
+    if not cic["theses"] and not cic["publications"]:
+        raise SystemExit(
+            f"Capture at {run_dir} has no parsed CIC records; check --run-dir before rebuilding."
+        )
+    saber = parse_pg_copy(dump)
     required = {"laboratories", "professors", "research_products", "theses", "academic_programs"}
     missing = required - saber.keys()
     if missing:
@@ -229,7 +263,15 @@ def build(dump: Path, run_dir: Path, db_path: Path) -> None:
     def insert_summary(entity: str, old_ids: set[str], new_ids: set[str], note: str) -> None:
         connection.execute(
             "INSERT INTO source_summary VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (entity, len(old_ids), len(new_ids), len(old_ids & new_ids), len(old_ids - new_ids), len(new_ids - old_ids), note),
+            (
+                entity,
+                len(old_ids),
+                len(new_ids),
+                len(old_ids & new_ids),
+                len(old_ids - new_ids),
+                len(new_ids - old_ids),
+                note,
+            ),
         )
 
     old_labs = {str(row["id"]): row for row in saber["laboratories"]}
@@ -250,44 +292,107 @@ def build(dump: Path, run_dir: Path, db_path: Path) -> None:
         "lab_sia": ("16", "probable_name_change"),
         "lab_sym": ("8", "same_name"),
     }
-    mapped_old_lab_ids = set()
+    mapped_old_lab_ids: set[str] = set()
+    unmapped_slugs: list[str] = []
     for slug, name in sorted(cic["laboratories"].items()):  # type: ignore[union-attr]
-        old_id, reconciliation = lab_candidates[slug]
+        candidate = lab_candidates.get(slug)
+        if candidate is None:
+            # A slug the mapping does not know about is kept for review instead
+            # of aborting the whole rebuild.
+            unmapped_slugs.append(slug)
+            connection.execute(
+                "INSERT INTO laboratory_comparison VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    slug,
+                    name,
+                    None,
+                    None,
+                    "unmapped",
+                    "No SABER candidate is mapped for this CIC laboratory slug.",
+                ),
+            )
+            continue
+        old_id, reconciliation = candidate
         mapped_old_lab_ids.add(old_id)
         old_name = old_labs[old_id]["name"]
         connection.execute(
             "INSERT INTO laboratory_comparison VALUES (?, ?, ?, ?, ?, ?)",
-            (slug, name, old_id, old_name, reconciliation,
-             "Name-based candidate only; CIC does not expose the old SABER lab ID. Review before treating as an identity match."),
+            (
+                slug,
+                name,
+                old_id,
+                old_name,
+                reconciliation,
+                "Name-based candidate only; CIC does not expose the old SABER lab ID. "
+                "Review before treating as an identity match.",
+            ),
         )
     for old_id, row in old_labs.items():
         if old_id not in mapped_old_lab_ids:
             connection.execute(
                 "INSERT INTO laboratory_comparison VALUES (?, ?, ?, ?, ?, ?)",
-                (f"saber-only-{old_id}", "", old_id, row["name"], "saber_only",
-                 "No CIC lab candidate was assigned; the old export includes this name."),
+                (
+                    f"saber-only-{old_id}",
+                    "",
+                    old_id,
+                    row["name"],
+                    "saber_only",
+                    "No CIC lab candidate was assigned; the old export includes this name.",
+                ),
             )
     connection.execute(
         "INSERT INTO source_summary VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("laboratories", len(old_labs), len(cic["laboratories"]), None, len(old_labs) - len(mapped_old_lab_ids),
-         max(0, len(cic["laboratories"]) - len(lab_candidates)),
-         "15 name-based candidates were entered for review; no shared numeric lab IDs were verified."),
+        (
+            "laboratories",
+            len(old_labs),
+            len(cic["laboratories"]),
+            None,
+            len(old_labs) - len(mapped_old_lab_ids),
+            len(unmapped_slugs),
+            f"{len(lab_candidates)} name-based candidates were entered for review; "
+            "no shared numeric lab IDs were verified.",
+        ),
     )
     old_prof_names = {normalize_name(str(row["name"])) or "" for row in saber["professors"]}
     new_prof_names = {normalize_name(name) or "" for name in cic["researcher_names"]}  # type: ignore[union-attr]
     connection.execute(
         "INSERT INTO source_summary VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("researchers", len(saber["professors"]), len(cic["researcher_pages"]), len(old_prof_names & new_prof_names),
-         len(old_prof_names - new_prof_names), len(new_prof_names - old_prof_names),
-         "Shared count requires accent-insensitive token-set name equality; it does not catch spelling/order variants and is not a proof of identity."),
+        (
+            "researchers",
+            len(saber["professors"]),
+            len(cic["researcher_pages"]),
+            len(old_prof_names & new_prof_names),
+            len(old_prof_names - new_prof_names),
+            len(new_prof_names - old_prof_names),
+            "Shared count requires accent-insensitive token-set name equality; it does not "
+            "catch spelling/order variants and is not a proof of identity.",
+        ),
     )
-    insert_summary("theses", set(saber_theses), set(cic_theses),
-                   "ID intersection is measured; title and SABER URL are compared per ID. IDs are not presumed infallible.")
-    insert_summary("publications", set(saber_products), set(cic_publications),
-                   "ID intersection is exploratory; current profile rows provide titles, not fetched detail pages.")
+    insert_summary(
+        "theses",
+        set(saber_theses),
+        set(cic_theses),
+        "ID intersection is measured; title and SABER URL are compared per ID. "
+        "IDs are not presumed infallible.",
+    )
+    insert_summary(
+        "publications",
+        set(saber_products),
+        set(cic_publications),
+        "ID intersection is exploratory; current profile rows provide titles, "
+        "not fetched detail pages.",
+    )
     connection.execute(
         "INSERT INTO source_summary VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("projects", 0, len(cic_projects), 0, 0, len(cic_projects), "SABER export has no projects table; CIC IDs deduplicated across profiles."),
+        (
+            "projects",
+            0,
+            len(cic_projects),
+            0,
+            0,
+            len(cic_projects),
+            "SABER export has no projects table; CIC IDs deduplicated across profiles.",
+        ),
     )
 
     for thesis_id in sorted(set(saber_theses) | set(cic_theses), key=lambda x: int(x)):
@@ -301,7 +406,11 @@ def build(dump: Path, run_dir: Path, db_path: Path) -> None:
             record_status = "in_both"
         title_status = None
         if old is not None and new_title is not None:
-            title_status = "same_after_normalization" if normalize_title(old["title"]) == normalize_title(new_title) else "different"
+            title_status = (
+                "same_after_normalization"
+                if normalize_title(old["title"]) == normalize_title(new_title)
+                else "different"
+            )
         advisor_1 = saber_professors.get(old["advisor1_id"] or "") if old else None
         advisor_2 = saber_professors.get(old["advisor2_id"] or "") if old else None
         program = saber_programs.get(old["academic_program_id"] or "") if old else None
@@ -310,26 +419,54 @@ def build(dump: Path, run_dir: Path, db_path: Path) -> None:
         url_id = url_match.group(1) if url_match else None
         roles = cic_roles.get(thesis_id, [])
         if title_status == "different":
-            note = "Same numeric thesis ID but titles differ after quote/whitespace normalization; review before merging as one thesis."
+            note = (
+                "Same numeric thesis ID but titles differ after quote/whitespace "
+                "normalization; review before merging as one thesis."
+            )
         elif url_id and url_id != thesis_id:
-            note = "SABER URL ends in a different ID from its thesis row; CIC title/role are preserved as separate claims."
+            note = (
+                "SABER URL ends in a different ID from its thesis row; "
+                "CIC title/role are preserved as separate claims."
+            )
         elif record_status == "in_both":
-            note = "Same numeric ID found in both sources; still retain source provenance and review role assignments."
+            note = (
+                "Same numeric ID found in both sources; still retain source "
+                "provenance and review role assignments."
+            )
         else:
-            note = "Record exists in one source only; absence is not proof that the thesis does not exist."
+            note = (
+                "Record exists in one source only; absence is not proof that the "
+                "thesis does not exist."
+            )
         connection.execute(
             "INSERT INTO thesis_comparison VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (thesis_id, record_status, title_status, old["title"] if old else None, new_title,
-             advisor_1["name"] if advisor_1 else None, advisor_2["name"] if advisor_2 else None,
-             program["program"] if program else None, program["status"] if program else None,
-             json.dumps(roles, ensure_ascii=False), saber_url, url_id,
-             int(url_id == thesis_id) if url_id else None, note),
+            (
+                thesis_id,
+                record_status,
+                title_status,
+                old["title"] if old else None,
+                new_title,
+                advisor_1["name"] if advisor_1 else None,
+                advisor_2["name"] if advisor_2 else None,
+                program["program"] if program else None,
+                program["status"] if program else None,
+                json.dumps(roles, ensure_ascii=False),
+                saber_url,
+                url_id,
+                int(url_id == thesis_id) if url_id else None,
+                note,
+            ),
         )
 
     for product_id in sorted(set(saber_products) | set(cic_publications), key=lambda x: int(x)):
         old = saber_products.get(product_id)
         new_title = cic_publications.get(product_id)
-        status = "in_both" if old and new_title is not None else ("saber_only" if old else "cic_only")
+        if old and new_title is not None:
+            status = "in_both"
+        elif old:
+            status = "saber_only"
+        else:
+            status = "cic_only"
         equal = None
         if old and new_title is not None:
             equal = int(normalize_title(old["title"]) == normalize_title(new_title))

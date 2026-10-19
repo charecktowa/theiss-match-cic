@@ -49,11 +49,18 @@ WHERE program <> 'Indefinido';
 
 -- A thesis URL ends in the SABER thesis ID. Only a URL whose ID is this
 -- thesis's own is trusted; the others were copied from another thesis.
+-- btrim without a character set removes spaces only, so tabs and newlines are
+-- named explicitly: a stray one would otherwise fail the ID match and load a
+-- null url.
+WITH trimmed AS (
+    SELECT id, academic_program_id, title, btrim(url, E' \t\n\r') AS url
+    FROM raw.theses
+)
 INSERT INTO catalog.thesis (id, enrollment_id, title, url, source_url)
 SELECT id, academic_program_id, catalog.clean_text(title),
        CASE WHEN substring(url FROM '/([0-9]+)$')::integer = id THEN url END,
-       nullif(btrim(url), '')
-FROM raw.theses;
+       nullif(url, '')
+FROM trimmed;
 
 INSERT INTO catalog.thesis_advisor (thesis_id, advisor_order, professor_id)
 SELECT id, 1, advisor1_id FROM raw.theses
