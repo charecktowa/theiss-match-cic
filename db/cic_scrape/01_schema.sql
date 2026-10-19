@@ -54,6 +54,8 @@ CREATE TYPE catalog.thesis_role AS ENUM (
 
 -- Keep all source assertions, including conflicts. The selected catalog value
 -- can then be rebuilt without losing what CIC or SABER said at capture time.
+-- Reserved: the CIC export does not fill it yet. Until it does, disagreements
+-- between profiles are reported in catalog.data_issue.
 CREATE TABLE catalog.observation (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     entity_type text NOT NULL,
@@ -99,6 +101,7 @@ CREATE TABLE catalog.laboratory_research_line (
     source_document_id bigint REFERENCES raw.source_document,
     PRIMARY KEY (laboratory_id, research_line_id)
 );
+CREATE INDEX laboratory_research_line_line_idx ON catalog.laboratory_research_line (research_line_id);
 
 CREATE TABLE catalog.program (
     code text PRIMARY KEY,
@@ -221,12 +224,14 @@ CREATE TABLE catalog.product_author (
     source_document_id bigint REFERENCES raw.source_document,
     PRIMARY KEY (product_id, person_id)
 );
+CREATE INDEX product_author_person_idx ON catalog.product_author (person_id);
 CREATE TABLE catalog.product_laboratory (
     product_id bigint NOT NULL REFERENCES catalog.research_product ON DELETE CASCADE,
     laboratory_id bigint NOT NULL REFERENCES catalog.laboratory,
     source_document_id bigint REFERENCES raw.source_document,
     PRIMARY KEY (product_id, laboratory_id)
 );
+CREATE INDEX product_laboratory_lab_idx ON catalog.product_laboratory (laboratory_id);
 
 CREATE TABLE catalog.research_project (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -249,12 +254,14 @@ CREATE TABLE catalog.project_member (
     source_document_id bigint REFERENCES raw.source_document,
     PRIMARY KEY (project_id, person_id)
 );
+CREATE INDEX project_member_person_idx ON catalog.project_member (person_id);
 CREATE TABLE catalog.project_laboratory (
     project_id bigint NOT NULL REFERENCES catalog.research_project ON DELETE CASCADE,
     laboratory_id bigint NOT NULL REFERENCES catalog.laboratory,
     source_document_id bigint REFERENCES raw.source_document,
     PRIMARY KEY (project_id, laboratory_id)
 );
+CREATE INDEX project_laboratory_lab_idx ON catalog.project_laboratory (laboratory_id);
 
 CREATE TABLE catalog.data_issue (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

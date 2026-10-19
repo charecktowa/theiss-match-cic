@@ -12,7 +12,9 @@ with `theiss` and `saber_scrape` on the same PostgreSQL instance. Restore it wit
 psql -d postgres -f data/cic_scrape.sql
 ```
 
-The target database must not already exist. The dump includes the schema,
+The target database must not already exist. Everything after `CREATE DATABASE`
+is one transaction, so a failed restore leaves `cic_scrape` empty; drop it before
+retrying. The dump includes the schema,
 pgvector extension activation, CIC catalog rows, source identities, and capture
 provenance. The raw HTML bodies are kept in the local ignored archive under
 `scraper/data/`; PostgreSQL stores their relative paths and SHA-256 hashes.
@@ -62,8 +64,10 @@ erDiagram
 `catalog.embedding` stores versioned pgvector vectors for theses, research
 products, or projects. Its `(entity_type, entity_id)` pair is polymorphic, so
 it does not use a foreign key to just one of those entity tables. `catalog.data_issue`
-keeps quality warnings; `catalog.observation` preserves source assertions and
-conflicts. Source identity tables preserve external IDs without treating them
+keeps quality warnings, including disagreements between CIC profiles;
+`catalog.observation` is reserved for per-source assertions and is not filled
+yet. `catalog.person_alias` keeps the other spellings a person's name was seen
+with, unreviewed. Source identity tables preserve external IDs without treating them
 as globally unique. `person_affiliation` and the product/project join tables
 allow people and work to relate to multiple institutions or labs.
 
