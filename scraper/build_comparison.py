@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import unicodedata
@@ -16,9 +17,10 @@ from collections import defaultdict
 from html.parser import HTMLParser
 from pathlib import Path
 
+from runs import latest_run
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DUMP = ROOT / "data" / "saber_sip.sql"
-DEFAULT_RUN = Path(__file__).resolve().parent / "data" / "cic_raw" / "runs" / "20261018T215744Z"
 DEFAULT_DB = Path(__file__).resolve().parent / "data" / "saber_cic_comparison.sqlite"
 
 
@@ -99,7 +101,10 @@ def parse_pg_copy(dump_path: Path) -> dict[str, list[dict[str, str | None]]]:
         table, column_text, body = match.groups()
         columns = [column.strip() for column in column_text.split(",")]
         rows: list[dict[str, str | None]] = []
-        for line in body.splitlines():
+        # COPY ends every row with "\n" and escapes it inside fields, so that is
+        # the only separator. splitlines() would also split on characters such as
+        # U+2028 or \x1c, which COPY leaves unescaped inside a title.
+        for line in body.split("\n")[:-1]:
             values = [decode_copy_field(value) for value in line.split("\t")]
             if len(values) != len(columns):
                 raise ValueError(
@@ -186,14 +191,32 @@ def extract_cic(run_dir: Path) -> dict[str, object]:
     }
 
 
+def capture_gaps(run_dir: Path, cic: dict[str, object]) -> list[str]:
+    """What the capture lacks for a fair comparison; empty when nothing is missing."""
+    run_json = run_dir / "run.json"
+    if not run_json.exists():
+        return [f"{run_json} does not exist"]
+    run = json.loads(run_json.read_text(encoding="utf-8"))
+    gaps = []
+    if not run.get("completed_at"):
+        gaps.append("the capture did not finish")
+    if not cic["laboratories"]:
+        gaps.append("no laboratory pages")
+    if not cic["researcher_pages"]:
+        gaps.append("no researcher pages")
+    # Thesis details are only expected when the run asked for them.
+    if "thesis" in run.get("detail_kinds", ["thesis"]) and not cic["theses"]:
+        gaps.append("no parsed thesis details")
+    return gaps
+
+
 def build(dump: Path, run_dir: Path, db_path: Path) -> None:
     cic = extract_cic(run_dir)
-    # Validate before the existing comparison is deleted: a missing or empty
-    # capture would otherwise write a database reporting zero CIC records.
-    if not cic["theses"] and not cic["publications"]:
-        raise SystemExit(
-            f"Capture at {run_dir} has no parsed CIC records; check --run-dir before rebuilding."
-        )
+    # A partial capture would write a comparison that reports zero CIC records
+    # for whatever it lacks, so it is refused before anything is written.
+    gaps = capture_gaps(run_dir, cic)
+    if gaps:
+        raise SystemExit(f"Capture at {run_dir} cannot be compared: {'; '.join(gaps)}.")
     saber = parse_pg_copy(dump)
     required = {"laboratories", "professors", "research_products", "theses", "academic_programs"}
     missing = required - saber.keys()
@@ -209,10 +232,12 @@ def build(dump: Path, run_dir: Path, db_path: Path) -> None:
     cic_publications: dict[str, str] = cic["publications"]  # type: ignore[assignment]
     cic_projects: dict[str, str] = cic["projects"]  # type: ignore[assignment]
 
+    # Built beside the target and renamed into place only once complete, so a
+    # failed rebuild leaves the previous comparison untouched.
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists():
-        db_path.unlink()
-    connection = sqlite3.connect(db_path)
+    partial = db_path.with_name(db_path.name + ".partial")
+    partial.unlink(missing_ok=True)
+    connection = sqlite3.connect(partial)
     connection.executescript(
         """
         PRAGMA foreign_keys = ON;
@@ -477,15 +502,18 @@ def build(dump: Path, run_dir: Path, db_path: Path) -> None:
 
     connection.commit()
     connection.close()
+    os.replace(partial, db_path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dump", type=Path, default=DEFAULT_DUMP)
-    parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN)
+    parser.add_argument(
+        "--run-dir", type=Path, default=None, help="capture run (default: the newest finished)"
+    )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     args = parser.parse_args()
-    build(args.dump, args.run_dir, args.db)
+    build(args.dump, args.run_dir or latest_run(), args.db)
     print(f"Comparison database saved: {args.db}")
 
 
