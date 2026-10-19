@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import re
 import sys
@@ -42,6 +43,15 @@ DETAIL_FIELDS = {
     "id_tet": "thesis",
 }
 USER_AGENT = "ThesisMatchCICResearch/0.1 (+https://github.com/charecktowa/theiss-match-cic)"
+ALLOWED_HOSTS = {"www.cic.ipn.mx", "cic.ipn.mx"}
+# Transient network errors (the October 2026 run lost one thesis to a TLS
+# handshake timeout) are retried; HTTP error responses are recorded as they are.
+RETRIES = 2
+
+
+def allowed_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and parsed.hostname in ALLOWED_HOSTS
 
 
 class PageParser(HTMLParser):
@@ -77,9 +87,10 @@ class PageParser(HTMLParser):
 
 
 class Capture:
-    def __init__(self, output: Path, delay: float) -> None:
+    def __init__(self, output: Path, delay: float, retries: int = RETRIES) -> None:
         self.output = output
         self.delay = delay
+        self.retries = retries
         self.manifest = (output / "manifest.jsonl").open("a", encoding="utf-8")
         self.seen: set[str] = set()
         self.requests = 0
@@ -105,8 +116,7 @@ class Capture:
                 query=quote(parts.query, safe="/?@-._~!$&'()*+,;=:%"),
             )
         )
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname not in {"www.cic.ipn.mx", "cic.ipn.mx"}:
+        if not allowed_url(url):
             return None
         body = urlencode(fields or []).encode("utf-8") if method == "POST" else None
         key = f"{method}:{url}:{body!r}"
@@ -128,34 +138,46 @@ class Capture:
             method=method,
             headers=headers,
         )
-        status = None
-        final_url = None
-        content_type = None
-        error = None
-        content = None
-        try:
-            with self.opener.open(request, timeout=40) as response:
-                status = response.status
-                final_url = response.geturl()
-                content_type = response.headers.get("Content-Type")
-                content = response.read()
-        except HTTPError as exc:
-            status = exc.code
-            final_url = exc.geturl()
-            content_type = exc.headers.get("Content-Type") if exc.headers else None
+        for attempt in range(1, self.retries + 2):
+            status = None
+            final_url = None
+            content_type = None
+            error = None
+            content = None
+            captured_at = datetime.now(UTC).isoformat()
+            try:
+                with self.opener.open(request, timeout=40) as response:
+                    status = response.status
+                    final_url = response.geturl()
+                    content_type = response.headers.get("Content-Type")
+                    # urllib follows redirects on its own, so the destination is
+                    # checked here, before its body is read or archived.
+                    if allowed_url(final_url):
+                        content = response.read()
+                    else:
+                        error = f"redirected outside CIC: {final_url}"
+            except HTTPError as exc:
+                status = exc.code
+                final_url = exc.geturl()
+                content_type = exc.headers.get("Content-Type") if exc.headers else None
+                error = f"{type(exc).__name__}: {exc}"
+            # URLError and TimeoutError are OSError subclasses, so OSError covers
+            # them; HTTPException covers a body cut short (IncompleteRead).
+            except (OSError, http.client.HTTPException, UnicodeError) as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                if attempt <= self.retries:
+                    time.sleep(self.delay * 2**attempt)
+                    continue
+            break
+        self.requests += 1
+        if error is not None:
             self.failures += 1
-            error = f"{type(exc).__name__}: {exc}"
-        # URLError and TimeoutError are OSError subclasses, so OSError covers them.
-        except (OSError, UnicodeError) as exc:
-            self.failures += 1
-            error = f"{type(exc).__name__}: {exc}"
-        finally:
-            self.requests += 1
-            time.sleep(self.delay)
+        time.sleep(self.delay)
 
         record: dict[str, object] = {
-            "captured_at": datetime.now(UTC).isoformat(),
+            "captured_at": captured_at,
             "stored_at": datetime.now(UTC).isoformat(),
+            "attempts": attempt,
             "method": method,
             "request_key": hashlib.sha256(key.encode("utf-8")).hexdigest(),
             "url": url,
@@ -198,7 +220,7 @@ def page_urls(parser: PageParser, base_url: str, *, laboratories: bool) -> set[s
         url = urljoin(base_url, href)
         parsed = urlparse(url)
         name = Path(parsed.path).name
-        if parsed.hostname not in {"www.cic.ipn.mx", "cic.ipn.mx"}:
+        if parsed.hostname not in ALLOWED_HOSTS:
             continue
         if not parsed.path.startswith("/views/investigation/") or not name.endswith(".php"):
             continue
@@ -229,22 +251,14 @@ def detail_requests(
         form_fields = [
             (str(name), str(value))
             for name, value in fields
-            if name
-            in {target, "name", "projectResearcher", "publicationResearcher", "thesisResearcher"}
+            if name in {target, "projectResearcher", "publicationResearcher", "thesisResearcher"}
         ]
         action = urljoin(page_url, str(form.get("action") or ""))
         item_id = next((value for name, value in form_fields if name == target), "")
         if not item_id.isdigit():
             continue
         kind = DETAIL_FIELDS[target]
-        requests.append(
-            (
-                kind,
-                item_id,
-                action,
-                [(name, value) for name, value in form_fields if name != "name"],
-            )
-        )
+        requests.append((kind, item_id, action, form_fields))
     return requests
 
 
@@ -257,6 +271,12 @@ def main() -> int:
         "--output",
         type=Path,
         default=Path(__file__).resolve().parent / "data" / "cic_raw" / "runs",
+    )
+    cli.add_argument(
+        "--retries",
+        type=int,
+        default=RETRIES,
+        help=f"retries after a network error (default: {RETRIES})",
     )
     cli.add_argument(
         "--details-limit", type=int, default=None, help="limit detail POSTs for a pilot capture"
@@ -272,13 +292,15 @@ def main() -> int:
     args = cli.parse_args()
     if args.delay < 0.5:
         cli.error("--delay must be at least 0.5 seconds")
+    if args.retries < 0:
+        cli.error("--retries must not be negative")
     selected_kinds = {kind.strip() for kind in args.kinds.split(",") if kind.strip()}
     if not selected_kinds or selected_kinds - set(DETAIL_FIELDS.values()):
         cli.error("--kinds must contain thesis, project, and/or publication")
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = args.output / run_id
     output.mkdir(parents=True, exist_ok=False)
-    capture = Capture(output, args.delay)
+    capture = Capture(output, args.delay, args.retries)
     (output / "run.json").write_text(
         json.dumps(
             {
@@ -288,6 +310,7 @@ def main() -> int:
                 "base_url": BASE,
                 "user_agent": USER_AGENT,
                 "delay_seconds": args.delay,
+                "retries": args.retries,
                 "detail_limit": args.details_limit,
                 "detail_kinds": sorted(selected_kinds),
                 "scope": (
