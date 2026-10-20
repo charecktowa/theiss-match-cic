@@ -9,6 +9,7 @@ backend/        FastAPI service. The only uv project in the repository.
   tests/        pytest suite
 compose.yaml    local orchestration for every service
 db/init/        SQL that runs once, when the database volume is first created
+db/setup.sh     loads the datasets in data/ into the local database instance
 db/saber_scrape/ builds saber_scrape from the frozen SABER export (see its README)
 db/cic_scrape/  reproducible CIC catalog schema and pgvector extension setup
 scraper/        CIC capture, parsing, and comparison code; raw HTML stays local
@@ -97,10 +98,34 @@ Credentials default to `theiss`/`theiss`/`theiss`. Override them with the
 picks up the matching `DATABASE_URL` automatically.
 
 `db/init/` scripts run only when the `pgdata` volume is initialized for the first time.
-To load the `saber_sip` dataset (excluded from git — see `data/`):
+
+### Loading the datasets
+
+The dumps in `data/` are excluded from git, so a fresh clone has no data. Put
+`saber_sip.sql` and `cic_scrape.sql` in `data/`, then load everything at once:
 
 ```bash
+db/setup.sh
+```
+
+The script starts the `db` service and loads each database that is not there yet:
+
+| Database | Source | Holds |
+| --- | --- | --- |
+| `theiss` (`POSTGRES_DB`) | `data/saber_sip.sql` | the raw SABER dump in `public`, including the 768-d embeddings |
+| `cic_scrape` | `data/cic_scrape.sql` | the CIC catalog (`raw` and `catalog` schemas) |
+| `saber_scrape` | `data/saber_sip.sql` + `db/saber_scrape/` | the cleaned copy, built by `db/saber_scrape/build.sh` |
+
+It is idempotent: a step is skipped when its database is already loaded, so it is
+safe to re-run after adding a dump. `cic_scrape` is restored without embeddings,
+so only `theiss` starts with vectors. The same loads can be run by hand:
+
+```bash
+# one-off restore into the application database
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -f -' < data/saber_sip.sql
+
+# the CIC dump creates cic_scrape itself, so it runs against the server's database
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -f -' < data/cic_scrape.sql
 ```
 
 The single quotes are required: they keep the host shell from expanding the
