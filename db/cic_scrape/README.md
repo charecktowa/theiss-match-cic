@@ -14,9 +14,11 @@ client runs inside the `db` container):
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -f -' < data/cic_scrape.sql
 ```
 
-The target database must not already exist. Everything after `CREATE DATABASE`
-is one transaction, so a failed restore leaves `cic_scrape` empty; drop it before
-retrying. The dump includes the schema,
+The target database must not already exist. The dump has no transaction boundary
+of its own, so an interrupted restore leaves `cic_scrape` partly loaded; drop it
+before retrying. `db/setup.sh` writes a completion marker to the database only
+after the restore succeeds, so it re-runs a restore that did not finish. The dump
+includes the schema,
 pgvector extension activation, CIC catalog rows, source identities, and capture
 provenance. The raw HTML bodies are kept in the local ignored archive under
 `scraper/data/`; PostgreSQL stores their relative paths and SHA-256 hashes.

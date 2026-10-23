@@ -108,7 +108,7 @@ The dumps in `data/` are excluded from git, so a fresh clone has no data. Put
 db/setup.sh
 ```
 
-The script starts the `db` service and loads each database that is not there yet:
+The script starts the `db` service and loads each database it has not loaded yet:
 
 | Database | Source | Holds |
 | --- | --- | --- |
@@ -117,8 +117,11 @@ The script starts the `db` service and loads each database that is not there yet
 | `saber_scrape` | `data/saber_sip.sql` + `db/saber_scrape/` | the cleaned copy, built by `db/saber_scrape/build.sh` |
 
 It is idempotent: a step is skipped when its database is already loaded, so it is
-safe to re-run after adding a dump. `cic_scrape` is restored without embeddings,
-so only `theiss` starts with vectors. The same loads can be run by hand:
+safe to re-run after adding a dump. A restore is atomic for `theiss`, and
+`cic_scrape` is marked complete only after its restore succeeds, so an
+interrupted load is redone on the next run instead of being skipped.
+`cic_scrape` is restored without embeddings, so only `theiss` starts with
+vectors. The same loads can be run by hand:
 
 ```bash
 # one-off restore into the application database
