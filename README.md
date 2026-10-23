@@ -117,15 +117,16 @@ The script starts the `db` service and loads each database it has not loaded yet
 | `saber_scrape` | `data/saber_sip.sql` + `db/saber_scrape/` | the cleaned copy, built by `db/saber_scrape/build.sh` |
 
 It is idempotent: a step is skipped when its database is already loaded, so it is
-safe to re-run after adding a dump. A restore is atomic for `theiss`, and
-`cic_scrape` is marked complete only after its restore succeeds, so an
-interrupted load is redone on the next run instead of being skipped.
+safe to re-run after adding a dump. Each load is checked by a table that exists
+only once it completed (`theiss` is restored in one transaction, the CIC dump
+and `build.sh` load their tables in one), so an interrupted load is redone on
+the next run instead of being skipped.
 `cic_scrape` is restored without embeddings, so only `theiss` starts with
 vectors. The same loads can be run by hand:
 
 ```bash
 # one-off restore into the application database
-docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -f -' < data/saber_sip.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction -v ON_ERROR_STOP=1 -f -' < data/saber_sip.sql
 
 # the CIC dump creates cic_scrape itself, so it runs against the server's database
 docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -f -' < data/cic_scrape.sql

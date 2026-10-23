@@ -87,13 +87,13 @@ schema, and inserts parsed CIC data and capture provenance. It can be restored
 alongside the existing database on a PostgreSQL instance with pgvector installed:
 
 ```bash
-psql -d postgres -f data/cic_scrape.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -f -' < data/cic_scrape.sql
 ```
 
 The export expects the target database name not to exist yet. It does not drop,
 rename, or modify `theiss` or `saber_scrape`. Everything after `CREATE DATABASE`
 runs in one transaction, so a failed restore leaves an empty `cic_scrape`; drop
-it (`psql -d postgres -c 'DROP DATABASE cic_scrape'`) before trying again. The raw HTML stays in the local
+it before trying again (`db/setup.sh` does so itself). The raw HTML stays in the local
 archive; the SQL export contains the complete `cic_scrape` database structure
 and parsed catalog data, plus relative archive paths, but not HTML bodies.
 

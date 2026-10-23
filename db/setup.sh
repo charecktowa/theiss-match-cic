@@ -37,29 +37,22 @@ query_psql() {
         'psql -U "$POSTGRES_USER" -d "$1" -X -q -A -t -v ON_ERROR_STOP=1 -f -' sh "$db"
 }
 
+# $1 is the database to query, $2 a query returning one boolean. A failed query
+# aborts the script instead of reading as "no", since a "no" can lead to a drop.
+check() {
+    out=$(printf '%s\n' "$2" | query_psql "$1") || {
+        echo "could not query $1" >&2
+        exit 1
+    }
+    [ "$out" = t ]
+}
+
 database_exists() {
-    printf "SELECT 1 FROM pg_database WHERE datname = '%s';\n" "$1" |
-        query_psql postgres | grep -qx 1
+    check postgres "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '$1');"
 }
 
 table_exists() {
-    printf "SELECT to_regclass('%s') IS NOT NULL;\n" "$2" | query_psql "$1" | grep -qx t
-}
-
-# A dump that creates its own database cannot be wrapped in a transaction, so
-# its progress cannot be rolled back. A comment written only after the restore
-# succeeds records that the database is complete; one without it is a failed or
-# interrupted attempt.
-loaded_marker='setup.sh: cic_scrape.sql loaded'
-
-mark_loaded() {
-    printf "COMMENT ON DATABASE %s IS '%s';\n" "$1" "$loaded_marker" | run_psql postgres
-}
-
-marker_matches() {
-    database_exists "$1" || return 1
-    printf "SELECT coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = '%s';\n" \
-        "$1" | query_psql postgres | grep -qxF "$loaded_marker"
+    database_exists "$1" && check "$1" "SELECT to_regclass('$2') IS NOT NULL;"
 }
 
 echo 'starting the db service'
@@ -83,6 +76,13 @@ if [ -z "$app_db" ]; then
     echo 'could not read POSTGRES_DB from the db container' >&2
     exit 1
 fi
+# cic_scrape and saber_scrape are loaded separately below, and the CIC step can
+# drop its database, so the application must not share either name.
+case $app_db in
+    cic_scrape | saber_scrape)
+        echo "POSTGRES_DB cannot be $app_db: setup.sh loads that dataset itself" >&2
+        exit 1 ;;
+esac
 
 if table_exists "$app_db" public.theses; then
     echo "$app_db: already loaded, skipping the SABER restore"
@@ -96,28 +96,33 @@ else
     echo "loaded $app_db"
 fi
 
-if marker_matches cic_scrape; then
+# The CIC dump creates its database outside a transaction, then loads the schema
+# and rows in one, so its tables exist only after a restore that completed. A
+# cic_scrape without them is empty, and dropping it loses nothing.
+if table_exists cic_scrape catalog.thesis; then
     echo 'cic_scrape: already loaded, skipping the restore'
 else
     require_file "$data_dir/cic_scrape.sql"
     if database_exists cic_scrape; then
-        echo 'cic_scrape: its restore did not finish, dropping it to retry'
+        echo 'cic_scrape: exists but is empty (its restore was rolled back), dropping it to retry'
         printf 'DROP DATABASE cic_scrape WITH (FORCE);\n' | run_psql postgres
     fi
     echo "restoring $data_dir/cic_scrape.sql"
     # The dump creates cic_scrape itself, so it runs against the server's own
     # database. It fails if the target database already exists.
     run_psql postgres <"$data_dir/cic_scrape.sql" >/dev/null
-    mark_loaded cic_scrape
     echo 'loaded cic_scrape'
 fi
 
-if database_exists saber_scrape; then
-    echo 'saber_scrape: already exists, skipping (run db/saber_scrape/build.sh to rebuild it)'
+# build.sh creates saber_scrape before filling it, but builds its catalog in one
+# transaction, so catalog.thesis exists only after a build that completed.
+if table_exists saber_scrape catalog.thesis; then
+    echo 'saber_scrape: already built, skipping (run db/saber_scrape/build.sh to rebuild it)'
 else
     require_file "$data_dir/saber_sip.sql"
     echo 'building saber_scrape'
-    db/saber_scrape/build.sh
+    # Both set explicitly, so an exported TARGET_DB cannot redirect the rebuild.
+    TARGET_DB=saber_scrape SABER_DUMP="$data_dir/saber_sip.sql" db/saber_scrape/build.sh
 fi
 
 echo

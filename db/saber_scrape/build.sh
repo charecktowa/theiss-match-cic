@@ -1,10 +1,12 @@
 #!/bin/sh
-# Builds the saber_scrape database from data/saber_sip.sql on the compose db.
+# Builds the saber_scrape database from data/saber_sip.sql (or $SABER_DUMP) on
+# the compose db.
 # Re-runnable: it drops and recreates only the target database, never theiss.
 set -eu
 
 cd "$(dirname "$0")/../.."
 target=${TARGET_DB:-saber_scrape}
+dump=${SABER_DUMP:-data/saber_sip.sql}
 
 case $target in
     *[!a-z0-9_]* | '') echo "TARGET_DB must be a lowercase identifier" >&2; exit 1 ;;
@@ -36,8 +38,8 @@ echo "recreating database $target"
 printf 'DROP DATABASE IF EXISTS %s WITH (FORCE);\nCREATE DATABASE %s;\n' "$target" "$target" \
     | run_psql postgres
 
-echo "restoring data/saber_sip.sql"
-run_psql "$target" < data/saber_sip.sql
+echo "restoring $dump"
+run_psql "$target" < "$dump"
 
 # One transaction: if any check fails, the database holds only the restore.
 echo "building raw, catalog and app"
