@@ -15,8 +15,9 @@ uv run marimo edit .               # browse every notebook here
 
 `marimo edit` only reads and writes the notebook file; it does not require the
 API or the database to be running. Connecting to the database from a notebook
-uses the same instance the API uses (`localhost:5432`, see the repository
-README for the credentials and how to load the dataset).
+uses the same instance the API uses (`localhost:5432`). The repository README has
+the credentials; load the datasets by running `db/setup.sh` from the repository root before
+querying them.
 
 ## Dependencies
 

@@ -6,15 +6,19 @@ SQL statement enables it in the database. The full data snapshot is generated
 at `data/cic_scrape.sql` by `scraper/build_postgres_export.py`.
 
 The export creates a separate database named `cic_scrape`, so it can coexist
-with `theiss` and `saber_scrape` on the same PostgreSQL instance. Restore it with:
+with `theiss` and `saber_scrape` on the same PostgreSQL instance. `db/setup.sh`
+restores it, or restore it on its own (there is no host `psql` to rely on, so the
+client runs inside the `db` container):
 
 ```bash
-psql -d postgres -f data/cic_scrape.sql
+docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -f -' < data/cic_scrape.sql
 ```
 
 The target database must not already exist. Everything after `CREATE DATABASE`
-is one transaction, so a failed restore leaves `cic_scrape` empty; drop it before
-retrying. The dump includes the schema,
+runs in one transaction, so an interrupted restore leaves `cic_scrape` empty;
+drop it before retrying. `db/setup.sh` does that itself: it treats a
+`cic_scrape` without `catalog.thesis` as a failed restore. The dump includes the
+schema,
 pgvector extension activation, CIC catalog rows, source identities, and capture
 provenance. The raw HTML bodies are kept in the local ignored archive under
 `scraper/data/`; PostgreSQL stores their relative paths and SHA-256 hashes.
