@@ -6,7 +6,7 @@
 # versions you commit with are not the ones CI checks.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.1
+    rev: v0.17.2
     hooks:
       # Check-only: no hook rewrites the code being committed.
       - id: ruff-check
